@@ -327,7 +327,9 @@ func ParseRange(s string, size int64) ([]httpRange, error) {
 					return nil, errors.New("invalid range")
 				}
 				r.start = i
-				r.length = j - i + 1
+				// Clamp end before computing the length so a huge end cannot
+				// overflow it (as net/http does).
+				r.length = min(j, size-1) - i + 1
 			}
 		}
 		if r.start >= size {
