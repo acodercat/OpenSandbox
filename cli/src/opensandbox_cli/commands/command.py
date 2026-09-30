@@ -121,11 +121,17 @@ def _run_command(
 
 
 def _handle_execution_error(obj: ClientContext, execution) -> None:
-    """Exit non-zero if the execution finished with an error."""
+    """Exit non-zero if the execution failed or its stream ended before it finished."""
     if execution.error:
         obj.output.error_panel(
             f"{execution.error.name}: {execution.error.value}",
             title="Execution Error",
+        )
+        sys.exit(1)
+    if execution.complete is None:
+        obj.output.error_panel(
+            "The output stream ended before the command finished, so its result is unknown.",
+            title="Execution Incomplete",
         )
         sys.exit(1)
 

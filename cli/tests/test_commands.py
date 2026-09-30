@@ -1760,6 +1760,23 @@ class TestCommandSeparators:
         mock_sb.commands.run.assert_called_once()
         assert mock_sb.commands.run.call_args.args[0] == "sh -lc 'echo ready'"
 
+    def test_command_run_exits_nonzero_when_stream_ends_early(self, runner: CliRunner) -> None:
+        mock_sb = MagicMock()
+        execution = MagicMock()
+        execution.error = None
+        execution.complete = None
+        mock_sb.commands.run.return_value = execution
+
+        result = _invoke(
+            runner,
+            ["command", "run", "sb-1", "--", "sleep", "60"],
+            sandbox=mock_sb,
+            output_format="raw",
+        )
+
+        assert result.exit_code == 1
+        assert "ended before the command finished" in result.output
+
     def test_command_run_argv_flag_preserves_literal_arguments(self, runner: CliRunner) -> None:
         # With --argv the trailing arguments must reach the process verbatim:
         # literal "$HOME", embedded space, single quote, and an empty string,
@@ -2124,6 +2141,23 @@ class TestCommandSession:
         mock_sb.commands.run_in_session.assert_called_once()
         assert mock_sb.commands.run_in_session.call_args.args[:2] == ("sess-123", "pwd")
         assert mock_sb.commands.run_in_session.call_args.kwargs["timeout"] == timedelta(seconds=30)
+
+    def test_session_run_exits_nonzero_when_stream_ends_early(self, runner: CliRunner) -> None:
+        mock_sb = MagicMock()
+        mock_execution = MagicMock()
+        mock_execution.error = None
+        mock_execution.complete = None
+        mock_sb.commands.run_in_session.return_value = mock_execution
+
+        result = _invoke(
+            runner,
+            ["command", "session", "run", "sb-1", "sess-123", "--", "sleep", "60"],
+            sandbox=mock_sb,
+            output_format="raw",
+        )
+
+        assert result.exit_code == 1
+        assert "ended before the command finished" in result.output
 
     def test_session_delete(self, runner: CliRunner) -> None:
         mock_sb = MagicMock()
