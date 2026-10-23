@@ -1432,7 +1432,10 @@ spec:
         assert result["state"] == "Running"
         assert result["reason"] == "RUNNING"
 
-    def test_get_status_returns_failed_when_pod_unschedulable(self):
+    # The controller keeps phase Pending while no pod is ready; older
+    # BatchSandboxes may carry no phase at all.
+    @pytest.mark.parametrize("phase", [None, "Pending"])
+    def test_get_status_returns_failed_when_pod_unschedulable(self, phase):
         mock_k8s_client = MagicMock()
         provider = BatchSandboxProvider(mock_k8s_client)
         mock_k8s_client.list_pods.return_value = [
@@ -1473,6 +1476,8 @@ spec:
                 "creationTimestamp": "2025-12-24T10:00:00Z",
             },
         }
+        if phase is not None:
+            workload["status"]["phase"] = phase
 
         result = provider.get_status(workload)
 

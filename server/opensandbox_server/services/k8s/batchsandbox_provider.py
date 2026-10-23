@@ -990,6 +990,16 @@ class BatchSandboxProvider(WorkloadProvider):
             }
 
         if phase == "Pending":
+            # The controller keeps the phase Pending while the pod cannot be
+            # scheduled, so an impossible platform has to be detected here.
+            unschedulable_message = self._platform_unschedulable_message_from_selector(workload)
+            if unschedulable_message:
+                return {
+                    "state": "Failed",
+                    "reason": "POD_PLATFORM_UNSCHEDULABLE",
+                    "message": unschedulable_message,
+                    "last_transition_at": creation_timestamp,
+                }
             reason, message = phase_map[phase]
             return {
                 "state": _PUBLIC_STATE_BY_PHASE[phase],
