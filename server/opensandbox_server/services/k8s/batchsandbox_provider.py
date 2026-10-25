@@ -27,7 +27,10 @@ from opensandbox_server.config import (
     INGRESS_MODE_GATEWAY,
 )
 from opensandbox_server.extensions.keys import BOOTSTRAP_EXECD_ISOLATION_KEY
-from opensandbox_server.services.constants import OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT
+from opensandbox_server.services.constants import (
+    BATCHSANDBOX_NAME_LABEL,
+    OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT,
+)
 from opensandbox_server.services.helpers import format_ingress_endpoint
 from opensandbox_server.api.schema import Endpoint, ImageSpec, PlatformSpec, Volume
 from opensandbox_server.services.k8s.image_pull_secret_helper import (
@@ -63,9 +66,6 @@ from opensandbox_server.services.k8s.workload_provider import (
 from opensandbox_server.services.runtime_resolver import SecureRuntimeResolver
 
 logger = logging.getLogger(__name__)
-
-# Label the BatchSandbox controller sets on the pods it creates.
-_BATCHSANDBOX_NAME_LABEL = "batch-sandbox.sandbox.opensandbox.io/name"
 
 
 _PUBLIC_STATE_BY_PHASE = {
@@ -886,7 +886,19 @@ class BatchSandboxProvider(WorkloadProvider):
             pass
         return None
 
-    def _platform_unschedulable_message_from_selector(self, workload: Dict[str, Any]) -> Optional[str]:
+    def get_unschedulable_status(self, workload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Report a Failed status when the requested platform cannot be scheduled."""
+        message = self._platform_unschedulable_message(workload)
+        if not message:
+            return None
+        return {
+            "state": "Failed",
+            "reason": "POD_PLATFORM_UNSCHEDULABLE",
+            "message": message,
+            "last_transition_at": workload.get("metadata", {}).get("creationTimestamp"),
+        }
+
+    def _platform_unschedulable_message(self, workload: Dict[str, Any]) -> Optional[str]:
         workload_has_platform_constraints, workload_has_non_platform_constraints = _workload_platform_constraint_scope(
             workload,
             "template",
@@ -902,9 +914,10 @@ class BatchSandboxProvider(WorkloadProvider):
         try:
             pods = self.k8s_client.list_pods(
                 namespace=namespace,
-                label_selector=f"{_BATCHSANDBOX_NAME_LABEL}={name}",
+                label_selector=f"{BATCHSANDBOX_NAME_LABEL}={name}",
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning(f"Failed to list pods of BatchSandbox {namespace}/{name}: {exc}")
             return None
 
         for pod in pods:
@@ -993,16 +1006,6 @@ class BatchSandboxProvider(WorkloadProvider):
             }
 
         if phase == "Pending":
-            # The controller keeps the phase Pending while the pod cannot be
-            # scheduled, so an impossible platform has to be detected here.
-            unschedulable_message = self._platform_unschedulable_message_from_selector(workload)
-            if unschedulable_message:
-                return {
-                    "state": "Failed",
-                    "reason": "POD_PLATFORM_UNSCHEDULABLE",
-                    "message": unschedulable_message,
-                    "last_transition_at": creation_timestamp,
-                }
             reason, message = phase_map[phase]
             return {
                 "state": _PUBLIC_STATE_BY_PHASE[phase],
@@ -1031,19 +1034,13 @@ class BatchSandboxProvider(WorkloadProvider):
             reason = "IP_ASSIGNED"
             message = f"Pod has IP assigned but not ready ({allocated}/{replicas} allocated, {ready} ready)"
         else:
-            unschedulable_message = self._platform_unschedulable_message_from_selector(workload)
-            if unschedulable_message:
-                state = "Failed"
-                reason = "POD_PLATFORM_UNSCHEDULABLE"
-                message = unschedulable_message
-            else:
-                state = "Pending"
-                reason = "POD_SCHEDULED" if allocated > 0 else "BATCHSANDBOX_PENDING"
-                message = (
-                    f"Pod is scheduled but waiting for IP ({allocated}/{replicas} allocated, {ready} ready)"
-                    if allocated > 0
-                    else "BatchSandbox is pending allocation"
-                )
+            state = "Pending"
+            reason = "POD_SCHEDULED" if allocated > 0 else "BATCHSANDBOX_PENDING"
+            message = (
+                f"Pod is scheduled but waiting for IP ({allocated}/{replicas} allocated, {ready} ready)"
+                if allocated > 0
+                else "BatchSandbox is pending allocation"
+            )
 
         return {
             "state": state,
