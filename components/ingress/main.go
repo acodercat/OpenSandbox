@@ -162,9 +162,9 @@ func main() {
 		scopeVerifier,
 		proxyOptions...,
 	)
-	mux := newIngressMux(reverseProxy, networkReadiness)
+	handler := newIngressHandler(reverseProxy, networkReadiness)
 
-	if err := http.ListenAndServe(fmt.Sprintf(":%v", flag.Port), mux); err != nil {
+	if err := http.ListenAndServe(fmt.Sprintf(":%v", flag.Port), handler); err != nil {
 		log.Panicf("Error starting http server: %v", err)
 	}
 }
@@ -252,12 +252,21 @@ func newNetworkReadiness(config connectivity.TrackerConfig) (connectivity.Observ
 	return observer, connectivity.NewReadinessHandler(tracker), nil
 }
 
-func newIngressMux(reverseProxy, networkReadiness http.Handler) *http.ServeMux {
-	mux := http.NewServeMux()
-	mux.Handle("/", reverseProxy)
-	mux.Handle("/status.ok/network-readiness", networkReadiness)
-	mux.HandleFunc("/status.ok", proxy.Healthz)
-	return mux
+// newIngressHandler serves the status endpoints and proxies everything else.
+// It does not use http.ServeMux, which answers paths with "//", "." or ".."
+// segments with a redirect to the cleaned path instead of passing them on;
+// the sandbox application owns its paths.
+func newIngressHandler(reverseProxy, networkReadiness http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status.ok":
+			proxy.Healthz(w, r)
+		case "/status.ok/network-readiness":
+			networkReadiness.ServeHTTP(w, r)
+		default:
+			reverseProxy.ServeHTTP(w, r)
+		}
+	})
 }
 
 func withLogger(ctx context.Context, logLevel string) context.Context {
