@@ -1202,12 +1202,15 @@ func (r *PoolReconciler) scalePool(ctx context.Context, pool *sandboxv1alpha1.Po
 		}
 	}
 
-	// Scale-down: delete redundant or excess pods, including idle pods above
-	// a lowered PoolMax (scale-up only stops creating them).
+	// Scale-down: delete redundant or excess pods
 	scaleIn := int32(0)
-	if target := min(desiredSchedulableCnt, pool.Spec.CapacitySpec.PoolMax); target < schedulableCnt {
-		scaleIn = schedulableCnt - target
+	if desiredSchedulableCnt < schedulableCnt {
+		scaleIn = schedulableCnt - desiredSchedulableCnt
 	}
+	// Idle pods above a lowered PoolMax are excess too: scale-up only stops
+	// creating them. Pods already planned for deletion count toward it.
+	planned := int32(len(r.pickPodsToDelete(pods, nil, toDeletePods, 0)))
+	scaleIn = max(scaleIn, schedulableCnt-planned-pool.Spec.CapacitySpec.PoolMax)
 	if scaleIn > 0 || len(toDeletePods) > 0 {
 		podsToDelete := r.pickPodsToDelete(pods, args.idlePods, args.toDeletePods, scaleIn)
 		maxDeleteCnt := r.getScaleMaxUnavailable(pool, desiredSchedulableCnt)

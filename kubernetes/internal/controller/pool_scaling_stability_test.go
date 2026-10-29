@@ -284,6 +284,50 @@ func TestScalePoolScalesInDownToPoolMax(t *testing.T) {
 	}
 }
 
+func TestScalePoolCountsPlannedDeletionsTowardPoolMax(t *testing.T) {
+	tests := []struct {
+		name      string
+		idle      []string
+		supplyCnt int32
+	}{
+		// A recycled pod is still listed as idle.
+		{name: "recycle", idle: []string{"pod-a", "pod-b", "pod-c", "pod-d", "pod-e"}},
+		// A rolling update takes its pod out of the idle list and asks for a
+		// replacement.
+		{name: "rolling update", idle: []string{"pod-b", "pod-c", "pod-d", "pod-e"}, supplyCnt: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			poolScaleExpectations = expectations.NewScaleExpectations()
+			t.Cleanup(func() { poolScaleExpectations = expectations.NewScaleExpectations() })
+
+			now := time.Now()
+			var pods []*corev1.Pod
+			var objects []client.Object
+			for i := 0; i < 5; i++ {
+				pod := stabilityTestPod("pod-"+string(rune('a'+i)), true, now.Add(time.Duration(i)*time.Second))
+				pods = append(pods, pod)
+				objects = append(objects, pod)
+			}
+			r := stabilityTestReconciler(t, objects...)
+			pool := stabilityTestPool(intstr.FromString("100%"))
+			pool.Spec.CapacitySpec = sandboxv1alpha1.CapacitySpec{PoolMax: 4, BufferMin: 4, BufferMax: 5}
+
+			// Deleting the planned pod-a already brings the pool down to PoolMax.
+			_, err := r.scalePool(context.Background(), pool, &scaleArgs{
+				pods: pods, totalPodCnt: 5, idlePods: tt.idle, supplyCnt: tt.supplyCnt, toDeletePods: []string{"pod-a"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			deleted := poolScaleExpectations.GetExpectations(controllerutils.GetControllerKey(pool))[expectations.Delete]
+			if deleted.Len() != 1 || !deleted.Has("pod-a") {
+				t.Fatalf("deleted %v, want only the planned pod-a", deleted.List())
+			}
+		})
+	}
+}
+
 func TestScalePoolLimitsDeleteBatch(t *testing.T) {
 	tests := []struct {
 		name           string
