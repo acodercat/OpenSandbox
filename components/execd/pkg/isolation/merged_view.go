@@ -15,6 +15,7 @@
 package isolation
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -22,6 +23,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/alibaba/opensandbox/execd/pkg/vfs"
 )
@@ -106,7 +108,9 @@ func (m *MergedView) rejectSymlink(path string) error {
 		check = filepath.Join(check, seg)
 		info, err := os.Lstat(check)
 		if err != nil {
-			if os.IsNotExist(err) {
+			// ENOTDIR: a parent is a file or whiteout, so nothing below it
+			// exists in this layer.
+			if os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR) {
 				return nil
 			}
 			return err
@@ -132,14 +136,45 @@ func (m *MergedView) createWhiteout(rel string) error {
 	return f.Close()
 }
 
-// hasWhiteout checks if a whiteout marker exists for the given relative path.
-func (m *MergedView) hasWhiteout(rel string) bool {
+// hidesLower reports whether upper hides the lower entry at rel itself: it
+// holds a whiteout marker for rel, a non-directory at rel, or an opaque
+// directory at rel. Kernel overlayfs records a process deleting a lower entry
+// as a 0/0 character device, and marks a directory created in place of a
+// deleted one opaque; this view records its own deletions as ".wh." markers.
+func (m *MergedView) hidesLower(rel string) bool {
 	if m.UpperDir == "" {
 		return false
 	}
 	whName := filepath.Join(filepath.Dir(rel), ".wh."+filepath.Base(rel))
-	_, err := os.Lstat(m.resolveUpper(whName))
-	return err == nil
+	if _, err := os.Lstat(m.resolveUpper(whName)); err == nil {
+		return true
+	}
+	upperPath := m.resolveUpper(rel)
+	info, err := os.Lstat(upperPath)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir() || isOpaqueDir(upperPath)
+}
+
+// lowerHidden reports whether upper hides the lower entry at rel, either at
+// rel or at one of its parent directories.
+func (m *MergedView) lowerHidden(rel string) bool {
+	for p := rel; p != "."; p = filepath.Dir(p) {
+		if m.hidesLower(p) {
+			return true
+		}
+	}
+	return false
+}
+
+// isWhiteoutEntry reports whether e is a kernel overlayfs whiteout.
+func isWhiteoutEntry(e fs.DirEntry) bool {
+	if e.Type()&fs.ModeCharDevice == 0 {
+		return false
+	}
+	info, err := e.Info()
+	return err == nil && isKernelWhiteout(info)
 }
 
 // Stat returns file info for a path. Checks upper first, then lower.
@@ -154,10 +189,10 @@ func (m *MergedView) Stat(path string) (os.FileInfo, error) {
 		if err := m.rejectSymlink(upperPath); err != nil {
 			return nil, err
 		}
-		if info, err := os.Lstat(upperPath); err == nil {
+		if info, err := os.Lstat(upperPath); err == nil && !isKernelWhiteout(info) {
 			return info, nil
 		}
-		if m.hasWhiteout(rel) {
+		if m.lowerHidden(rel) {
 			return nil, &os.PathError{Op: "stat", Path: path, Err: os.ErrNotExist}
 		}
 	}
@@ -173,10 +208,15 @@ func (m *MergedView) ReadDir(path string) ([]os.DirEntry, error) {
 
 	entryMap := make(map[string]os.DirEntry)
 
-	// Lower first.
-	lowerEntries, lowerErr := os.ReadDir(m.resolveLower(rel))
-	for _, e := range lowerEntries {
-		entryMap[e.Name()] = e
+	// Lower first, unless upper deleted or replaced this directory.
+	hidden := m.lowerHidden(rel)
+	lowerErr := error(fs.ErrNotExist)
+	if !hidden {
+		var lowerEntries []os.DirEntry
+		lowerEntries, lowerErr = os.ReadDir(m.resolveLower(rel))
+		for _, e := range lowerEntries {
+			entryMap[e.Name()] = e
+		}
 	}
 
 	// Upper overlays — takes precedence over lower.
@@ -190,7 +230,19 @@ func (m *MergedView) ReadDir(path string) ([]os.DirEntry, error) {
 				delete(entryMap, origName)
 				continue
 			}
+			if isWhiteoutEntry(e) {
+				delete(entryMap, e.Name())
+				continue
+			}
 			entryMap[e.Name()] = e
+		}
+		// With the lower directory hidden, a path upper neither lists nor
+		// holds was deleted: it is a whiteout, or sits under a deleted
+		// directory.
+		if hidden && upperErr != nil {
+			if info, err := os.Lstat(m.resolveUpper(rel)); err != nil || isKernelWhiteout(info) {
+				return nil, &os.PathError{Op: "readdir", Path: path, Err: os.ErrNotExist}
+			}
 		}
 	}
 
@@ -223,7 +275,7 @@ func (m *MergedView) Open(path string) (*os.File, error) {
 		if f, err := os.Open(upperPath); err == nil {
 			return f, nil
 		}
-		if m.hasWhiteout(rel) {
+		if m.lowerHidden(rel) {
 			return nil, &os.PathError{Op: "open", Path: path, Err: os.ErrNotExist}
 		}
 	}
@@ -245,7 +297,7 @@ func (m *MergedView) ReadFile(path string) ([]byte, error) {
 		if data, err := os.ReadFile(upperPath); err == nil {
 			return data, nil
 		}
-		if m.hasWhiteout(rel) {
+		if m.lowerHidden(rel) {
 			return nil, &os.PathError{Op: "read", Path: path, Err: os.ErrNotExist}
 		}
 	}
@@ -504,42 +556,44 @@ func (m *MergedView) Search(root, pattern string) ([]string, error) { //nolint:g
 	}
 
 	var results []string
-	seen := make(map[string]bool)
-	whiteouts := make(map[string]bool)
+	// Lower entries that upper hides, the same way hidesLower decides.
+	hidden := make(map[string]bool)
 
-	// Collect whiteouts from upper first.
+	// Collect them from upper first.
 	if m.UpperDir != "" {
 		upperRoot := m.resolveUpper(rootRel)
 		_ = filepath.WalkDir(upperRoot, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return nil //nolint:nilerr // skip unreadable dirs
 			}
-			if strings.HasPrefix(d.Name(), ".wh.") {
-				rel, _ := filepath.Rel(m.UpperDir, p)
-				origName := strings.TrimPrefix(d.Name(), ".wh.")
-				origRel := filepath.Join(filepath.Dir(rel), origName)
-				whiteouts[origRel] = true
+			rel, _ := filepath.Rel(m.UpperDir, p)
+			if origName, ok := strings.CutPrefix(d.Name(), ".wh."); ok {
+				hidden[filepath.Join(filepath.Dir(rel), origName)] = true
+			} else if !d.IsDir() || isOpaqueDir(p) {
+				hidden[rel] = true
 			}
 			return nil
 		})
 	}
 
-	// Walk lower.
-	if m.LowerDir != "" {
+	// Walk lower, unless upper hides root itself.
+	if m.LowerDir != "" && !m.lowerHidden(rootRel) {
 		lowerRoot := m.resolveLower(rootRel)
 		_ = filepath.WalkDir(lowerRoot, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return nil //nolint:nilerr // skip unreadable dirs
 			}
+			rel, _ := filepath.Rel(m.LowerDir, p)
+			if hidden[rel] {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
 			if d.IsDir() {
 				return nil
 			}
-			rel, _ := filepath.Rel(m.LowerDir, p)
-			if whiteouts[rel] {
-				return nil
-			}
 			if matched, _ := filepath.Match(pattern, filepath.Base(rel)); matched {
-				seen[rel] = true
 				results = append(results, rel)
 			}
 			return nil
@@ -556,11 +610,11 @@ func (m *MergedView) Search(root, pattern string) ([]string, error) { //nolint:g
 			if d.IsDir() {
 				return nil
 			}
-			if strings.HasPrefix(d.Name(), ".wh.") {
+			if strings.HasPrefix(d.Name(), ".wh.") || isWhiteoutEntry(d) {
 				return nil
 			}
 			rel, _ := filepath.Rel(m.UpperDir, p)
-			if matched, _ := filepath.Match(pattern, filepath.Base(rel)); matched && !seen[rel] {
+			if matched, _ := filepath.Match(pattern, filepath.Base(rel)); matched {
 				results = append(results, rel)
 			}
 			return nil
