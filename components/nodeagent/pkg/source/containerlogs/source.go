@@ -1164,19 +1164,25 @@ func (s *containerLogSource) scanAll(ctx context.Context, watcher *fsnotify.Watc
 	return nil
 }
 
+// unadoptedExpiredLocked reports whether runtime belongs to a Pod that ended
+// before kubelet created its log directory, and the directory has had the
+// same window to appear that late data gets after an end. Such a stream was
+// never adopted, so it can never end; nothing was observed, so nothing is
+// finalized. The caller holds runtime.mu.
+func (s *containerLogSource) unadoptedExpiredLocked(runtime *streamRuntime, now time.Time) bool {
+	if runtime.ended || !runtime.resource.Terminated || !runtime.persisted.CoverageStartedAt.IsZero() {
+		return false
+	}
+	if runtime.unadoptedSince.IsZero() {
+		runtime.unadoptedSince = now
+	}
+	return !now.Before(runtime.unadoptedSince.Add(s.cfg.EndedStateRetention))
+}
+
 func (s *containerLogSource) pruneEndedRuntime(streamRef api.StreamRef, runtime *streamRuntime, now time.Time) (bool, error) {
 	runtime.mu.Lock()
-	eligible := runtime.ended && runtime.endAcked && runtime.persisted.RepairDeadline != nil && !now.Before(*runtime.persisted.RepairDeadline)
-	if !runtime.ended && runtime.resource.Terminated && runtime.persisted.CoverageStartedAt.IsZero() {
-		// The Pod ended before kubelet created its log directory, so the
-		// stream can never end. Give the directory the same window late
-		// data gets after an end, then forget the stream if it is still
-		// missing. Nothing was observed, so nothing is finalized.
-		if runtime.unadoptedSince.IsZero() {
-			runtime.unadoptedSince = now
-		}
-		eligible = !now.Before(runtime.unadoptedSince.Add(s.cfg.EndedStateRetention))
-	}
+	endedExpired := runtime.ended && runtime.endAcked && runtime.persisted.RepairDeadline != nil && !now.Before(*runtime.persisted.RepairDeadline)
+	eligible := endedExpired || s.unadoptedExpiredLocked(runtime, now)
 	logDirectory := runtime.resource.LogDirectory
 	podUID := runtime.resource.PodUID
 	runtime.mu.Unlock()
