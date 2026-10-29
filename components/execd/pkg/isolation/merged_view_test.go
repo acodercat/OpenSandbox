@@ -464,3 +464,29 @@ func TestMergedView_RWModeSameUpperAndLower(t *testing.T) {
 	_, err = mv.ReadDir(filepath.Join("d", "x.txt"))
 	assert.False(t, errors.Is(err, fs.ErrNotExist), "an existing file is not missing: %v", err)
 }
+
+// An upper file that exists but cannot be read keeps its error: it is
+// neither missing nor a reason to serve the lower copy.
+func TestMergedView_UnreadableUpperFileKeepsItsError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads mode 000 files")
+	}
+	for _, sameDir := range []bool{false, true} {
+		mv := newTestMergedView(t, WorkspaceRW)
+		if sameDir {
+			// rw mode as the runtime builds it.
+			mv = NewMergedView(mv.UpperDir, mv.UpperDir, WorkspaceRW, mv.Uid, mv.Gid)
+		} else {
+			require.NoError(t, os.WriteFile(filepath.Join(mv.LowerDir, "f.txt"), []byte("stale"), 0o644))
+		}
+		require.NoError(t, os.WriteFile(filepath.Join(mv.UpperDir, "f.txt"), []byte("new"), 0o000))
+
+		_, err := mv.ReadFile("f.txt")
+		assert.ErrorIs(t, err, fs.ErrPermission, "ReadFile, same dir %v", sameDir)
+		f, err := mv.Open("f.txt")
+		if err == nil {
+			f.Close()
+		}
+		assert.ErrorIs(t, err, fs.ErrPermission, "Open, same dir %v", sameDir)
+	}
+}

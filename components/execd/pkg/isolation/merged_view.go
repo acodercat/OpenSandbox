@@ -168,6 +168,14 @@ func (m *MergedView) lowerHidden(rel string) bool {
 	return false
 }
 
+// inUpper reports whether upper holds an entry at upperPath other than a
+// kernel whiteout. That entry alone answers a read of the path, including
+// with an error.
+func inUpper(upperPath string) bool {
+	info, err := os.Lstat(upperPath)
+	return err == nil && !isKernelWhiteout(info)
+}
+
 // isWhiteoutEntry reports whether e is a kernel overlayfs whiteout.
 func isWhiteoutEntry(e fs.DirEntry) bool {
 	if e.Type()&fs.ModeCharDevice == 0 {
@@ -272,8 +280,8 @@ func (m *MergedView) Open(path string) (*os.File, error) {
 		if err := m.rejectSymlink(upperPath); err != nil {
 			return nil, err
 		}
-		if f, err := os.Open(upperPath); err == nil {
-			return f, nil
+		if inUpper(upperPath) {
+			return os.Open(upperPath)
 		}
 		if m.lowerHidden(rel) {
 			return nil, &os.PathError{Op: "open", Path: path, Err: os.ErrNotExist}
@@ -294,8 +302,8 @@ func (m *MergedView) ReadFile(path string) ([]byte, error) {
 		if err := m.rejectSymlink(upperPath); err != nil {
 			return nil, err
 		}
-		if data, err := os.ReadFile(upperPath); err == nil {
-			return data, nil
+		if inUpper(upperPath) {
+			return os.ReadFile(upperPath)
 		}
 		if m.lowerHidden(rel) {
 			return nil, &os.PathError{Op: "read", Path: path, Err: os.ErrNotExist}
