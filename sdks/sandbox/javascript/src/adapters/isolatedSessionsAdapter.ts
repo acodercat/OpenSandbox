@@ -12,10 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { SandboxApiException } from "../core/exceptions.js";
 import { createExecdClient } from "../openapi/execdClient.js";
 import { IsolatedFilesystemAdapter } from "./isolatedFilesystemAdapter.js";
-import { throwOnOpenApiFetchError } from "./openapiError.js";
+import { throwOnFailedResponse } from "./openapiError.js";
 import { parseJsonEventStream } from "./sse.js";
 import type { components as ExecdComponents } from "../api/execd.js";
 import type { CommandExecution, ServerStreamEvent } from "../models/execd.js";
@@ -59,27 +58,6 @@ function assertNonBlank(value: string, field: string): void {
 
 function utf8ByteLength(text: string): number {
   return new TextEncoder().encode(text).byteLength;
-}
-
-/**
- * Throws a failed response as a `SandboxApiException` with its status code,
- * request id and the error code and message from the body, the same way the
- * adapters built on the generated client report errors.
- */
-async function throwResponseError(
-  res: Response,
-  method: string,
-  pathname: string,
-): Promise<never> {
-  const fallbackMessage = `${method} ${pathname} failed (status=${res.status})`;
-  const body = await res.text().catch(() => "");
-  throwOnOpenApiFetchError({ error: body, response: res }, fallbackMessage);
-  // Only an unexpected 2xx status with an empty body gets here.
-  throw new SandboxApiException({
-    message: fallbackMessage,
-    statusCode: res.status,
-    requestId: res.headers.get("x-request-id") ?? undefined,
-  });
 }
 
 export interface IsolatedSessionsAdapterOptions {
@@ -169,7 +147,7 @@ export class IsolatedSessionsAdapter implements IsolationService {
       body: body != null ? JSON.stringify(body) : undefined,
     });
     if (!res.ok) {
-      await throwResponseError(res, method, pathname);
+      await throwOnFailedResponse(res, `${method} ${pathname} failed (status=${res.status})`);
     }
     if (res.status === 204) return undefined as T;
     const text = await res.text();
@@ -300,7 +278,7 @@ export class IsolatedSessionsAdapter implements IsolationService {
       body: JSON.stringify(body),
     });
     if (res.status !== 202) {
-      await throwResponseError(res, "POST", pathname);
+      await throwOnFailedResponse(res, `POST ${pathname} failed (status=${res.status})`);
     }
     const raw = await res.text();
     return JSON.parse(raw) as IsolatedBackgroundRun;
@@ -342,7 +320,7 @@ export class IsolatedSessionsAdapter implements IsolationService {
       },
     });
     if (!res.ok) {
-      await throwResponseError(res, "GET", pathname);
+      await throwOnFailedResponse(res, `GET ${pathname} failed (status=${res.status})`);
     }
 
     const text = await res.text();
