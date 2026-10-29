@@ -2458,7 +2458,7 @@ func TestMissingPodDirectoryDefersCoverageUntilLeafWatch(t *testing.T) {
 	defer db.Close()
 	resource := testResource(api.Resource{SandboxID: "sb", ClusterName: "cluster", Namespace: "ns", PodName: "pod", PodUID: "uid", NodeName: "node", Container: "sandbox"}, logDirectory, true)
 	log, _ := logger.New(logger.Config{OutputPaths: []string{"stdout"}})
-	source := newTestSource(t, sourceConfig{ReconcileInterval: time.Hour, MaxLineBytes: 1024, PartialTimeout: time.Second}, &fakeView{resources: []streamResource{resource}, changes: make(chan struct{}, 1)}, db, log, nil)
+	source := newTestSource(t, sourceConfig{ReconcileInterval: time.Hour, MaxLineBytes: 1024, PartialTimeout: time.Second, EndedStateRetention: time.Hour}, &fakeView{resources: []streamResource{resource}, changes: make(chan struct{}, 1)}, db, log, nil)
 	events := make(chan api.SourceEvent, 1)
 	source.out = events
 	watcher, err := fsnotify.NewWatcher()
@@ -2506,6 +2506,83 @@ func TestMissingPodDirectoryDefersCoverageUntilLeafWatch(t *testing.T) {
 	}
 	if _, watched := source.watches[logDirectory]; !watched {
 		t.Fatalf("leaf watch not tracked: %v", source.watches)
+	}
+}
+
+// A Pod deleted before kubelet created its log directory leaves a stream that
+// was never adopted. It is kept while the directory may still appear, then
+// forgotten along with its state.
+func TestNeverAdoptedTerminatedStreamIsPrunedAfterRetention(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		terminated bool
+		adopted    bool
+		later      time.Duration
+		createDir  bool
+		wantPruned bool
+	}{
+		{name: "within retention", terminated: true, later: 0},
+		{name: "after retention", terminated: true, later: 2 * time.Hour, wantPruned: true},
+		{name: "directory appeared", terminated: true, later: 2 * time.Hour, createDir: true},
+		{name: "active resource", terminated: false, later: 2 * time.Hour},
+		// An adopted stream must still end through the normal path.
+		{name: "adopted stream", terminated: true, adopted: true, later: 2 * time.Hour},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			logDirectory := filepath.Join(t.TempDir(), "ns_pod_uid", "sandbox")
+			db, err := state.Open(t.TempDir(), "target", 1<<20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			resource := testResource(api.Resource{SandboxID: "sb", ClusterName: "cluster", Namespace: "ns", PodName: "pod", PodUID: "uid", NodeName: "node", Container: "sandbox"}, logDirectory, test.terminated)
+			view := &fakeView{resources: []streamResource{resource}, changes: make(chan struct{}, 1)}
+			log, _ := logger.New(logger.Config{OutputPaths: []string{"stdout"}})
+			source := newTestSource(t, sourceConfig{ReconcileInterval: time.Hour, MaxLineBytes: 1024, PartialTimeout: time.Second, EndedStateRetention: time.Hour, PruneEndedState: true}, view, db, log, nil)
+			events := make(chan api.SourceEvent, 1)
+			source.out = events
+			ref := streamRef(resource)
+			if test.adopted {
+				if err := db.PutSourceStream(state.SourceStream{StreamRef: ref.ID, Resource: freezeResource(resource), Revision: 1, CoverageStartedAt: canonicalCoverageBoundary(time.Now()), MonitoringEpoch: "earlier-epoch", InitialScanComplete: true, LossReasons: []string{}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// What each scan does first; the log directory is missing, so the
+			// stream is never adopted.
+			runtime, err := source.getOrCreateRuntime(ref, resource)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := source.pruneEndedRuntime(ref, runtime, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if test.createDir {
+				if err := os.MkdirAll(logDirectory, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			pruned, err := source.pruneEndedRuntime(ref, runtime, time.Now().Add(test.later))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pruned != test.wantPruned {
+				t.Fatalf("pruned=%v want=%v", pruned, test.wantPruned)
+			}
+			_, found, err := db.GetSourceStream(ref.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, tracked := source.streams[ref.ID]
+			if found == test.wantPruned || tracked == test.wantPruned || (len(view.resources) == 0) != test.wantPruned {
+				t.Fatalf("state found=%v tracked=%v resources=%v after pruned=%v", found, tracked, view.resources, pruned)
+			}
+			select {
+			case event := <-events:
+				t.Fatalf("never-adopted stream emitted %+v", event)
+			default:
+			}
+		})
 	}
 }
 
