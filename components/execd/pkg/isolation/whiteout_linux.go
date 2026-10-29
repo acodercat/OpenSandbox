@@ -35,14 +35,10 @@ func isKernelWhiteout(info fs.FileInfo) bool {
 
 // isOpaqueDir reports whether kernel overlayfs marked the upper directory at
 // path opaque, which it does when a process replaces a deleted lower
-// directory. bwrap mounts the overlay with userxattr inside its user
-// namespace (user.overlay.*); a mount without it uses trusted.overlay.*.
+// directory. bwrap always mounts the overlay with userxattr, with or without
+// a user namespace, so the marker is user.overlay.opaque.
 func isOpaqueDir(path string) bool {
-	for _, name := range []string{"user.overlay.opaque", "trusted.overlay.opaque"} {
-		buf := make([]byte, 1)
-		if n, err := unix.Lgetxattr(path, name, buf); err == nil && n == 1 && buf[0] == 'y' {
-			return true
-		}
-	}
-	return false
+	buf := make([]byte, 1)
+	n, err := unix.Lgetxattr(path, "user.overlay.opaque", buf)
+	return err == nil && n == 1 && buf[0] == 'y'
 }

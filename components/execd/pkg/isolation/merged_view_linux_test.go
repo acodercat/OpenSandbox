@@ -63,8 +63,8 @@ func TestMergedView_OpaqueDirectoryHidesLowerContents(t *testing.T) {
 	upperDir := filepath.Join(mv.UpperDir, "d")
 	require.NoError(t, os.MkdirAll(upperDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(upperDir, "new.txt"), []byte("new"), 0o644))
-	// What a process's `rm -r d && mkdir d` leaves behind; bwrap mounts the
-	// overlay with userxattr inside its user namespace.
+	// What a process's `rm -r d && mkdir d` leaves behind; bwrap always
+	// mounts the overlay with userxattr.
 	if err := unix.Setxattr(upperDir, "user.overlay.opaque", []byte("y"), 0); err != nil {
 		t.Skipf("cannot set user xattrs here: %v", err)
 	}
