@@ -368,3 +368,15 @@ func TestCreateContext_SkipsNewerUnauthenticatedDecoyRuntimeFile(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "sess-after-decoy", sessionID)
 }
+
+func TestKernelWaitingBackoffKeepsWaitingForJupyterStartup(t *testing.T) {
+	backoff := kernelWaitingBackoff
+	backoff.Jitter = 0
+	var total time.Duration
+	for backoff.Steps > 0 {
+		delay := backoff.Step()
+		require.LessOrEqual(t, delay, 5*time.Second, "a single wait should stay short")
+		total += delay
+	}
+	require.GreaterOrEqual(t, total, 4*time.Minute, "a slow Jupyter start should still be waited for")
+}
