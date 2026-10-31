@@ -28,6 +28,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import click
+
 if sys.version_info >= (3, 11):
     import tomllib
 else:
@@ -64,14 +66,22 @@ def load_config_file(config_path: Path | None = None) -> dict[str, Any]:
     """Load and parse the TOML config file.
 
     Returns an empty dict if the file doesn't exist or tomllib is unavailable.
+    Raises ``click.ClickException`` if the file cannot be read or parsed.
     """
     path = config_path or DEFAULT_CONFIG_PATH
     if not path.exists():
         return {}
     if tomllib is None:
         return {}
-    with open(path, "rb") as f:
-        return tomllib.load(f)
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except OSError as exc:
+        raise click.ClickException(f"Cannot read config file {path}: {exc}") from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise click.ClickException(
+            f"Config file is not valid TOML ({path}): {exc}"
+        ) from exc
 
 
 def resolve_config(

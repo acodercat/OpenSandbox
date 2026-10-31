@@ -18,8 +18,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import click
 import pytest
+from click.testing import CliRunner
 
+from opensandbox_cli import main as cli_main
 from opensandbox_cli.config import (
     DEFAULT_CONFIG_TEMPLATE,
     init_config_file,
@@ -48,6 +51,24 @@ class TestLoadConfigFile:
         assert result["output"]["color"] is False
         assert result["defaults"]["image"] == "alpine"
         assert result["defaults"]["timeout"] == "5m"
+
+    def test_invalid_toml_is_a_click_error(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.toml"
+        cfg.write_text("[connection]\ndomain = localhost:8080\n")
+        with pytest.raises(click.ClickException, match="not valid TOML"):
+            load_config_file(cfg)
+
+    def test_unreadable_file_is_a_click_error(self, tmp_path: Path) -> None:
+        with pytest.raises(click.ClickException, match="Cannot read config file"):
+            load_config_file(tmp_path)
+
+    def test_cli_reports_invalid_toml_without_traceback(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.toml"
+        cfg.write_text("[connection]\ndomain = localhost:8080\n")
+        result = CliRunner().invoke(cli_main.cli, ["--config", str(cfg), "sandbox", "list"])
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert "not valid TOML" in result.stderr
 
 
 # ---------------------------------------------------------------------------
