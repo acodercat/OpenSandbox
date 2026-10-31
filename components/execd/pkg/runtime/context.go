@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"k8s.io/client-go/util/retry"
@@ -251,8 +252,15 @@ func (c *Controller) jupyterClient() *jupyter.Client {
 	return c.jupyterClientWithToken(c.jupyterToken())
 }
 
+// jupyterRequestTimeout bounds each Jupyter REST call so a server that accepts
+// connections but never answers cannot stall context creation. It leaves room
+// for POST /api/sessions, which starts the kernel. Kernel execution uses a
+// websocket and is not affected.
+var jupyterRequestTimeout = 30 * time.Second
+
 func (c *Controller) jupyterClientWithToken(token string) *jupyter.Client {
 	httpClient := &http.Client{
+		Timeout: jupyterRequestTimeout,
 		Transport: &jupyter.AuthTransport{
 			Token: token,
 			Base:  http.DefaultTransport,

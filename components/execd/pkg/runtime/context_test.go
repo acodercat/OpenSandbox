@@ -403,6 +403,38 @@ func TestCreateContextStopsRetryingWhenContextIsDone(t *testing.T) {
 	require.Equal(t, int32(1), attempts.Load())
 }
 
+func TestCreateContextStopsWhenJupyterNeverResponds(t *testing.T) {
+	original := jupyterRequestTimeout
+	jupyterRequestTimeout = 100 * time.Millisecond
+	defer func() { jupyterRequestTimeout = original }()
+
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+
+	c := NewController(server.URL, "token")
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.CreateContext(ctx, &CreateContextRequest{Language: Python, Cwd: t.TempDir()})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		require.Error(t, err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("CreateContext kept waiting on a Jupyter request that never answered")
+	}
+}
+
 func TestCreateContextDeletesSessionWhenKernelCheckFails(t *testing.T) {
 	var created, deleted atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
