@@ -717,7 +717,9 @@ func (r *IsolatedRunner) RunInIsolatedSession(ctx context.Context, id string, co
 	// cross-run exports working. The code runs through eval, which parses
 	// and runs it one command at a time like top-level input, with stdin on
 	// /dev/null: the script arrives on the shell's stdin, so a command that
-	// reads stdin would otherwise consume the end marker below.
+	// reads stdin would otherwise consume the end marker below. `\command`
+	// reaches the builtin even if an earlier run left a function or alias
+	// named eval.
 	var script strings.Builder
 	script.WriteString("trap : INT\n")
 	if len(envs) > 0 {
@@ -726,7 +728,7 @@ func (r *IsolatedRunner) RunInIsolatedSession(ctx context.Context, id string, co
 			script.WriteString(fmt.Sprintf("export %s=%s\n", shellescape(k), shellescape(v)))
 		}
 	}
-	script.WriteString(fmt.Sprintf("eval %s </dev/null\n", shellescape(code)))
+	script.WriteString(fmt.Sprintf("\\command eval %s </dev/null\n", shellescape(code)))
 	if len(envs) > 0 {
 		script.WriteString(")\n")
 	}

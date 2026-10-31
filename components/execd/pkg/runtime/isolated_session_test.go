@@ -653,6 +653,41 @@ func TestRunInIsolatedSession_ParsesCodeIncrementally(t *testing.T) {
 	}
 }
 
+// TestRunInIsolatedSession_IgnoresEvalOverrides verifies that a function or
+// alias named eval left behind by one run cannot swallow the code of the
+// next: the runner must still reach the builtin.
+func TestRunInIsolatedSession_IgnoresEvalOverrides(t *testing.T) {
+	if getShell() != bashShell {
+		t.Skip("overriding eval with a function needs bash")
+	}
+	for _, override := range []string{
+		"eval() { :; }",
+		"shopt -s expand_aliases; alias eval=true",
+	} {
+		runner, id := newInterruptTestSession(t)
+		run := func(code string) ([]string, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			var lines []string
+			err := runner.RunInIsolatedSession(ctx, id, code, nil, func(line string) {
+				lines = append(lines, line)
+			})
+			return lines, err
+		}
+
+		if _, err := run(override); err != nil {
+			t.Fatalf("%s: %v", override, err)
+		}
+		lines, err := run("echo next; false")
+		if err == nil || !strings.Contains(err.Error(), "code 1") {
+			t.Errorf("after %q: error = %v, want exit code 1", override, err)
+		}
+		if len(lines) != 1 || lines[0] != "next" {
+			t.Errorf("after %q: output = %v, want [next]", override, lines)
+		}
+	}
+}
+
 func TestCapabilities(t *testing.T) {
 	runner := newTestRunner(t)
 	caps := runner.Capabilities()
