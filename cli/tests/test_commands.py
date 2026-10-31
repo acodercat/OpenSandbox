@@ -314,8 +314,11 @@ class TestConfigSet:
         cfg_path = tmp_path / "config.toml"
         cfg_path.write_text("[connection]\n")
 
-        runner.invoke(cli, ["--config", str(cfg_path), "config", "set", key, value])
+        result = runner.invoke(
+            cli, ["--config", str(cfg_path), "config", "set", key, value]
+        )
 
+        assert result.exit_code == 0
         assert resolve_config(config_path=cfg_path)[resolved_key] == expected
 
     def test_set_reports_invalid_existing_toml(
