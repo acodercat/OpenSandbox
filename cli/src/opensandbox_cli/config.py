@@ -69,16 +69,18 @@ def load_config_file(config_path: Path | None = None) -> dict[str, Any]:
     Raises ``click.ClickException`` if the file cannot be read or parsed.
     """
     path = config_path or DEFAULT_CONFIG_PATH
-    if not path.exists():
-        return {}
     if tomllib is None:
         return {}
+    # Open directly instead of checking path.exists() first: exists() raises
+    # PermissionError for a path under a directory that cannot be searched.
     try:
         with open(path, "rb") as f:
             return tomllib.load(f)
+    except (FileNotFoundError, NotADirectoryError):
+        return {}
     except OSError as exc:
         raise click.ClickException(f"Cannot read config file {path}: {exc}") from exc
-    except tomllib.TOMLDecodeError as exc:
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         raise click.ClickException(
             f"Config file is not valid TOML ({path}): {exc}"
         ) from exc

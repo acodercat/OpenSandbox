@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import click
@@ -61,6 +62,30 @@ class TestLoadConfigFile:
     def test_unreadable_file_is_a_click_error(self, tmp_path: Path) -> None:
         with pytest.raises(click.ClickException, match="Cannot read config file"):
             load_config_file(tmp_path)
+
+    def test_non_utf8_file_is_a_click_error(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.toml"
+        cfg.write_bytes(b"\xff\xfe = 1\n")
+        with pytest.raises(click.ClickException, match="not valid TOML"):
+            load_config_file(cfg)
+
+    def test_unsearchable_directory_is_a_click_error(self, tmp_path: Path) -> None:
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        (locked / "config.toml").write_text("[connection]\n")
+        locked.chmod(0)
+        try:
+            if os.access(locked, os.X_OK):
+                pytest.skip("running with permissions that bypass directory modes")
+            with pytest.raises(click.ClickException, match="Cannot read config file"):
+                load_config_file(locked / "config.toml")
+        finally:
+            locked.chmod(0o755)
+
+    def test_path_under_a_file_is_treated_as_missing(self, tmp_path: Path) -> None:
+        not_a_dir = tmp_path / "file"
+        not_a_dir.write_text("")
+        assert load_config_file(not_a_dir / "config.toml") == {}
 
     def test_cli_reports_invalid_toml_without_traceback(self, tmp_path: Path) -> None:
         cfg = tmp_path / "config.toml"
