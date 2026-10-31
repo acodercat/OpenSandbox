@@ -598,6 +598,40 @@ func TestRunInIsolatedSession_ExitCode(t *testing.T) {
 	}
 }
 
+// TestRunInIsolatedSession_StdinDetached verifies that user code cannot read
+// the rest of the run script (including its end marker) from the shell's
+// stdin, with and without envs.
+func TestRunInIsolatedSession_StdinDetached(t *testing.T) {
+	for _, envs := range []map[string]string{nil, {"RUN_ENVELOPE": "1"}} {
+		runner, id := newInterruptTestSession(t)
+		run := func(code string) ([]string, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			var lines []string
+			err := runner.RunInIsolatedSession(ctx, id, code, envs, func(line string) {
+				lines = append(lines, line)
+			})
+			return lines, err
+		}
+
+		lines, err := run(`read x; echo "got:$x"; false`)
+		if err == nil || !strings.Contains(err.Error(), "code 1") {
+			t.Errorf("envs=%v: read run error = %v, want exit code 1", envs, err)
+		}
+		if len(lines) != 1 || lines[0] != "got:" {
+			t.Errorf("envs=%v: read run output = %v, want [got:]", envs, lines)
+		}
+
+		if _, err := run("cat"); err != nil {
+			t.Errorf("envs=%v: cat run: %v", envs, err)
+		}
+		lines, err = run("echo next")
+		if err != nil || len(lines) != 1 || lines[0] != "next" {
+			t.Errorf("envs=%v: follow-up run = %v, %v; want [next]", envs, lines, err)
+		}
+	}
+}
+
 func TestCapabilities(t *testing.T) {
 	runner := newTestRunner(t)
 	caps := runner.Capabilities()
@@ -723,11 +757,24 @@ func TestRunInIsolatedSession_ReportsFailedScriptWrite(t *testing.T) {
 	}
 	defer runner.DeleteIsolatedSession(id)
 
+	// Simulate a shell that no longer reads its stdin (e.g. it was killed):
+	// the script goes to a pipe whose read end is already closed.
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = pr.Close()
+	s := runner.lookup(id)
+	s.mu.Lock()
+	shellStdin := s.stdin
+	s.stdin = pw
+	s.mu.Unlock()
+	defer shellStdin.Close()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	code := "exec sleep 300 </dev/null\n#" + strings.Repeat("x", 150*1024)
-	err = runner.RunInIsolatedSession(ctx, id, code, nil, nil)
+	err = runner.RunInIsolatedSession(ctx, id, "echo unreachable", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "write stdin") {
 		t.Fatalf("RunInIsolatedSession error = %v, want a write stdin error", err)
 	}

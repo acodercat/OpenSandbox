@@ -713,23 +713,25 @@ func (r *IsolatedRunner) RunInIsolatedSession(ctx context.Context, id string, co
 
 	// trap : INT makes the cancellation SIGINT kill the running command, not
 	// the persistent shell. Envs runs are subshell-wrapped so an interrupt
-	// aborts the whole script; no-envs runs stay in the main shell to keep
-	// cross-run exports working.
+	// aborts the whole script; no-envs runs use a group in the main shell to
+	// keep cross-run exports working. Either way the user code reads
+	// /dev/null: the script arrives on the shell's stdin, so a command that
+	// reads stdin would otherwise consume the end marker below.
+	openGroup, closeGroup := "{\n", "} </dev/null\n"
+	if len(envs) > 0 {
+		openGroup, closeGroup = "(\n", ") </dev/null\n"
+	}
 	var script strings.Builder
 	script.WriteString("trap : INT\n")
-	if len(envs) > 0 {
-		script.WriteString("(\n")
-		for k, v := range envs {
-			script.WriteString(fmt.Sprintf("export %s=%s\n", shellescape(k), shellescape(v)))
-		}
+	script.WriteString(openGroup)
+	for k, v := range envs {
+		script.WriteString(fmt.Sprintf("export %s=%s\n", shellescape(k), shellescape(v)))
 	}
 	script.WriteString(code)
 	if !strings.HasSuffix(code, "\n") {
 		script.WriteString("\n")
 	}
-	if len(envs) > 0 {
-		script.WriteString(")\n")
-	}
+	script.WriteString(closeGroup)
 	script.WriteString(fmt.Sprintf("echo %s $?\n", runMarker))
 
 	// runCtx is also cancelled when the script cannot be written, so the
@@ -776,9 +778,8 @@ func (r *IsolatedRunner) RunInIsolatedSession(ctx context.Context, id string, co
 		}
 	}()
 
-	// The shell runs the script as it reads it, so write it while stdout is
-	// read: a command that fills the stdout pipe before the shell has read the
-	// rest of a large script would otherwise block both sides.
+	// Write the script while stdout is read, so the run never depends on the
+	// stdin pipe holding the whole script, and a failed write cancels the scan.
 	written := make(chan error, 1)
 	go func() {
 		_, err := io.WriteString(stdin, script.String())
