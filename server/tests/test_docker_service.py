@@ -4163,6 +4163,56 @@ class TestDockerVolumeValidation:
             f"shared-data:{mount_path}:rw",
         ]
 
+    @pytest.mark.parametrize(
+        "mount_path,sandbox_binds,extensions,platform",
+        [
+            (
+                "/etc/ssl/private-ca/root-ca.crt/",
+                ["/opt/certs/root-ca.crt:/etc/ssl//private-ca/root-ca.crt:ro"],
+                None,
+                None,
+            ),
+            ("/var/lib/execd/isolation", [], {"bootstrap.execd.isolation": "enable"}, None),
+            ("/oem", [], None, PlatformSpec(os="windows", arch="amd64")),
+            ("/data:ro", [], None, None),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_mount_paths_docker_rejects_are_400(
+        self, mock_docker, mount_path, sandbox_binds, extensions, platform
+    ):
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = []
+        mock_client.api.create_container.side_effect = DockerException("Duplicate mount point")
+        mock_docker.from_env.return_value = mock_client
+        cfg = _app_config()
+        cfg.docker.sandbox_binds = sandbox_binds
+        service = DockerSandboxService(config=cfg)
+        mock_client.reset_mock()
+
+        request = CreateSandboxRequest(
+            image=ImageSpec(uri="python:3.11"),
+            timeout=120,
+            resourceLimits=ResourceLimits(root={}),
+            entrypoint=["python"],
+            extensions=extensions,
+            platform=platform,
+            volumes=[
+                Volume(name="data", pvc=PVC(claim_name="shared-data"), mount_path=mount_path),
+            ],
+        )
+
+        with (
+            patch.object(service, "_ensure_image_available"),
+            patch.object(service, "_prepare_sandbox_runtime"),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            await service.create_sandbox(request)
+
+        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+        assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_MOUNT_PATH
+        assert mock_client.mock_calls == []
+
     @pytest.mark.asyncio
     async def test_pvc_volume_not_found_rejected(self, mock_docker):
         """PVC backend with non-existent Docker named volume should be rejected when createIfNotExists is false."""
