@@ -713,25 +713,23 @@ func (r *IsolatedRunner) RunInIsolatedSession(ctx context.Context, id string, co
 
 	// trap : INT makes the cancellation SIGINT kill the running command, not
 	// the persistent shell. Envs runs are subshell-wrapped so an interrupt
-	// aborts the whole script; no-envs runs use a group in the main shell to
-	// keep cross-run exports working. Either way the user code reads
+	// aborts the whole script; no-envs runs stay in the main shell to keep
+	// cross-run exports working. The code runs through eval, which parses
+	// and runs it one command at a time like top-level input, with stdin on
 	// /dev/null: the script arrives on the shell's stdin, so a command that
 	// reads stdin would otherwise consume the end marker below.
-	openGroup, closeGroup := "{\n", "} </dev/null\n"
-	if len(envs) > 0 {
-		openGroup, closeGroup = "(\n", ") </dev/null\n"
-	}
 	var script strings.Builder
 	script.WriteString("trap : INT\n")
-	script.WriteString(openGroup)
-	for k, v := range envs {
-		script.WriteString(fmt.Sprintf("export %s=%s\n", shellescape(k), shellescape(v)))
+	if len(envs) > 0 {
+		script.WriteString("(\n")
+		for k, v := range envs {
+			script.WriteString(fmt.Sprintf("export %s=%s\n", shellescape(k), shellescape(v)))
+		}
 	}
-	script.WriteString(code)
-	if !strings.HasSuffix(code, "\n") {
-		script.WriteString("\n")
+	script.WriteString(fmt.Sprintf("eval %s </dev/null\n", shellescape(code)))
+	if len(envs) > 0 {
+		script.WriteString(")\n")
 	}
-	script.WriteString(closeGroup)
 	script.WriteString(fmt.Sprintf("echo %s $?\n", runMarker))
 
 	// runCtx is also cancelled when the script cannot be written, so the

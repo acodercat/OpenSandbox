@@ -632,6 +632,27 @@ func TestRunInIsolatedSession_StdinDetached(t *testing.T) {
 	}
 }
 
+// TestRunInIsolatedSession_ParsesCodeIncrementally verifies that each
+// command of a run is parsed after the previous ones ran, as at top level, so
+// a shell option set early in the code applies to the lines after it.
+func TestRunInIsolatedSession_ParsesCodeIncrementally(t *testing.T) {
+	if getShell() != bashShell {
+		t.Skip("extglob needs bash")
+	}
+	runner, id := newInterruptTestSession(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var lines []string
+	code := "shopt -s extglob\ncase aa in +(a)) echo matched;; esac"
+	err := runner.RunInIsolatedSession(ctx, id, code, nil, func(line string) {
+		lines = append(lines, line)
+	})
+	if err != nil || len(lines) != 1 || lines[0] != "matched" {
+		t.Fatalf("run = %v, %v; want [matched]", lines, err)
+	}
+}
+
 func TestCapabilities(t *testing.T) {
 	runner := newTestRunner(t)
 	caps := runner.Capabilities()
