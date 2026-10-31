@@ -1284,17 +1284,28 @@ class SandboxPoolAsync:
                 self._in_flight_condition.notify_all()
 
     async def _await_in_flight_drain(self, timeout: timedelta) -> bool:
-        deadline = asyncio.get_running_loop().time() + timeout.total_seconds()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout.total_seconds()
         async with self._in_flight_condition:
             while self._in_flight > 0:
-                remaining = deadline - asyncio.get_running_loop().time()
+                remaining = deadline - loop.time()
                 if remaining <= 0:
                     return False
                 try:
                     await asyncio.wait_for(self._in_flight_condition.wait(), remaining)
                 except (asyncio.TimeoutError, TimeoutError):
-                    return self._in_flight == 0
+                    if self._in_flight > 0:
+                        return False
+        # Kills handed off by those operations target ids already dropped from
+        # the store, so they drain under the same budget.
+        cleanup_tasks = set(self._cleanup_tasks)
+        if not cleanup_tasks:
             return True
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return False
+        _, pending = await asyncio.wait(cleanup_tasks, timeout=remaining)
+        return not pending
 
     async def _stop_reconcile(
         self,
@@ -1324,20 +1335,13 @@ class SandboxPoolAsync:
                 heartbeat.cancel()
                 await asyncio.gather(heartbeat, return_exceptions=True)
         self._heartbeat_task = None
-        warmup_tasks = list(self._warmup_tasks)
-        cleanup_tasks = list(self._cleanup_tasks)
-        if not wait_for_warmup:
-            for warmup_task in warmup_tasks:
-                warmup_task.cancel()
-            # Cleanup kills target ids already dropped from the store, so give them
-            # the same bounded wait the sync pool gives its executor threads.
-            if cleanup_tasks:
-                await asyncio.wait(
-                    cleanup_tasks, timeout=_WARMUP_TERMINATION_TIMEOUT_SECONDS
-                )
-            for cleanup_task in cleanup_tasks:
-                cleanup_task.cancel()
-        await asyncio.gather(*warmup_tasks, *cleanup_tasks, return_exceptions=True)
+        background_tasks = [*self._warmup_tasks, *self._cleanup_tasks]
+        if wait_for_warmup and background_tasks:
+            await asyncio.gather(*background_tasks, return_exceptions=True)
+        elif background_tasks:
+            for background_task in background_tasks:
+                background_task.cancel()
+            await asyncio.gather(*background_tasks, return_exceptions=True)
         await self._release_primary_lock_best_effort()
         self._mark_primary_lost()
 

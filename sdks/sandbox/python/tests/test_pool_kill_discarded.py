@@ -92,7 +92,10 @@ def _build_sync_pool(manager: _RecordingSyncManager) -> SandboxPoolSync:
     )
 
 
-def _build_async_pool(manager: _RecordingAsyncManager) -> SandboxPoolAsync:
+def _build_async_pool(
+    manager: _RecordingAsyncManager,
+    drain_timeout: timedelta = timedelta(seconds=30),
+) -> SandboxPoolAsync:
     async def _factory(_: ConnectionConfig) -> _RecordingAsyncManager:
         return manager
 
@@ -103,6 +106,7 @@ def _build_async_pool(manager: _RecordingAsyncManager) -> SandboxPoolAsync:
         connection_config=ConnectionConfig(),
         creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
         sandbox_manager_factory=_factory,  # type: ignore[arg-type]
+        drain_timeout=drain_timeout,
     )
 
 
@@ -465,9 +469,9 @@ async def test_async_schedule_kill_discarded_alive_falls_back_to_inline(
     )
 
 
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("graceful", [True, False])
-async def test_async_shutdown_lets_scheduled_kills_finish(graceful: bool) -> None:
+async def test_async_graceful_shutdown_drains_scheduled_kills() -> None:
     """Scheduled kills target ids already dropped from the store; cancelling
     them on shutdown would leave those sandboxes running until their TTL."""
     manager = _RecordingAsyncManager(per_call_delay=0.2)
@@ -475,6 +479,21 @@ async def test_async_shutdown_lets_scheduled_kills_finish(graceful: bool) -> Non
     await pool.start()
 
     await pool._schedule_kill_discarded_alive("kill-pool", ("stale-1",), source="acquire")
-    await pool.shutdown(graceful=graceful)
+    await pool.shutdown(graceful=True)
 
     assert manager.killed == ["stale-1"]
+
+
+@pytest.mark.asyncio
+async def test_async_graceful_shutdown_bounds_kill_drain_by_drain_timeout() -> None:
+    manager = _RecordingAsyncManager(per_call_delay=5.0)
+    pool = _build_async_pool(manager, drain_timeout=timedelta(milliseconds=50))
+    await pool.start()
+
+    await pool._schedule_kill_discarded_alive("kill-pool", ("stale-1",), source="acquire")
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    await pool.shutdown(graceful=True)
+
+    assert loop.time() - started < 1.0
+    assert manager.killed == []
