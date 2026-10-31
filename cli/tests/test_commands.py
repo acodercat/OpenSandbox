@@ -295,6 +295,29 @@ class TestConfigSet:
         assert load_config_file(cfg_path)["connection"]["api_key"] == value
         assert resolve_config(config_path=cfg_path)["api_key"] == value
 
+    @pytest.mark.parametrize(
+        ("key", "value", "resolved_key", "expected"),
+        [
+            ("connection.request_timeout", "1e2", "request_timeout", 100),
+            ("connection.use_server_proxy", "1.00", "use_server_proxy", True),
+        ],
+    )
+    def test_set_still_infers_numbers_for_typed_keys(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        key: str,
+        value: str,
+        resolved_key: str,
+        expected: object,
+    ) -> None:
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text("[connection]\n")
+
+        runner.invoke(cli, ["--config", str(cfg_path), "config", "set", key, value])
+
+        assert resolve_config(config_path=cfg_path)[resolved_key] == expected
+
     def test_set_reports_invalid_existing_toml(
         self, runner: CliRunner, tmp_path: Path
     ) -> None:

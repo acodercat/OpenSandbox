@@ -26,7 +26,7 @@ from tomlkit.exceptions import ParseError
 from tomlkit.items import InlineTable, Table
 
 from opensandbox_cli.client import ClientContext
-from opensandbox_cli.config import init_config_file, resolve_config
+from opensandbox_cli.config import STRING_KEYS, init_config_file, resolve_config
 from opensandbox_cli.utils import handle_errors, output_option, prepare_output
 
 
@@ -111,20 +111,20 @@ def _parse_toml_value(raw: str) -> Any:
 
     Booleans, integers, and floats are recognized so values like ``false`` or
     ``30`` keep their native TOML type; anything else is stored as a string.
-    A number that would not write back as the same text (``007123``,
-    ``1e10``, ``NaN``) stays a string, so values such as API keys are kept
-    as typed. The value is always serialized by tomlkit, so quotes, escapes,
-    and whitespace in string values are encoded correctly.
+    The value is always serialized by tomlkit, so quotes, escapes, and
+    whitespace in string values are encoded correctly.
     """
     normalized = raw.lower()
     if normalized in ("true", "false"):
         return normalized == "true"
-    for parse in (int, float):
-        try:
-            number = parse(raw)
-        except ValueError:
-            continue
-        return number if str(number) == raw else raw
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    try:
+        return float(raw)
+    except ValueError:
+        pass
     return raw
 
 
@@ -166,7 +166,7 @@ def config_set(
     if not isinstance(table, (Table, InlineTable, OutOfOrderTableProxy)):
         raise click.ClickException(f"Cannot set {key}: '{section}' is not a TOML table.")
 
-    table[field] = _parse_toml_value(value)
+    table[field] = value if key in STRING_KEYS else _parse_toml_value(value)
     path.write_text(tomlkit.dumps(document), encoding="utf-8")
 
     obj.output.success(f"Set {key} = {value}")
