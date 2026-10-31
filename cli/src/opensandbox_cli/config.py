@@ -74,9 +74,9 @@ def load_config_file(config_path: Path | None = None) -> dict[str, Any]:
         return tomllib.load(f)
 
 
-# Config-file keys resolve_config reads as text. `config set` stores them
-# as typed: inferring a TOML number would rewrite values such as an API key
-# "007123" (written back as 7123).
+# Config-file keys resolve_config reads as text. `config set` stores their
+# values verbatim: inferring a TOML number would rewrite an API key such as
+# "007123" as 7123.
 STRING_KEYS = frozenset(
     {
         "connection.api_key",
