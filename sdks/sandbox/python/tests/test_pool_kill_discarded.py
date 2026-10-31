@@ -463,3 +463,18 @@ async def test_async_schedule_kill_discarded_alive_falls_back_to_inline(
     assert sorted(manager.killed) == sorted(ids), (
         "discarded-alive kill was silently dropped when create_task raised"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("graceful", [True, False])
+async def test_async_shutdown_lets_scheduled_kills_finish(graceful: bool) -> None:
+    """Scheduled kills target ids already dropped from the store; cancelling
+    them on shutdown would leave those sandboxes running until their TTL."""
+    manager = _RecordingAsyncManager(per_call_delay=0.2)
+    pool = _build_async_pool(manager)
+    await pool.start()
+
+    await pool._schedule_kill_discarded_alive("kill-pool", ("stale-1",), source="acquire")
+    await pool.shutdown(graceful=graceful)
+
+    assert manager.killed == ["stale-1"]

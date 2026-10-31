@@ -1324,13 +1324,20 @@ class SandboxPoolAsync:
                 heartbeat.cancel()
                 await asyncio.gather(heartbeat, return_exceptions=True)
         self._heartbeat_task = None
-        background_tasks = [*self._warmup_tasks, *self._cleanup_tasks]
-        if wait_for_warmup and background_tasks:
-            await asyncio.gather(*background_tasks, return_exceptions=True)
-        elif background_tasks:
-            for background_task in background_tasks:
-                background_task.cancel()
-            await asyncio.gather(*background_tasks, return_exceptions=True)
+        warmup_tasks = list(self._warmup_tasks)
+        cleanup_tasks = list(self._cleanup_tasks)
+        if not wait_for_warmup:
+            for warmup_task in warmup_tasks:
+                warmup_task.cancel()
+            # Cleanup kills target ids already dropped from the store, so give them
+            # the same bounded wait the sync pool gives its executor threads.
+            if cleanup_tasks:
+                await asyncio.wait(
+                    cleanup_tasks, timeout=_WARMUP_TERMINATION_TIMEOUT_SECONDS
+                )
+            for cleanup_task in cleanup_tasks:
+                cleanup_task.cancel()
+        await asyncio.gather(*warmup_tasks, *cleanup_tasks, return_exceptions=True)
         await self._release_primary_lock_best_effort()
         self._mark_primary_lost()
 
