@@ -52,7 +52,7 @@ from opensandbox.models.templates import (
 )
 
 from opensandbox_cli.commands.terminal import _make_stdin_reader, stream_pty
-from opensandbox_cli.config import load_config_file
+from opensandbox_cli.config import load_config_file, resolve_config
 from opensandbox_cli.main import cli
 from opensandbox_cli.output import OutputFormatter
 
@@ -273,6 +273,27 @@ class TestConfigSet:
         parsed = load_config_file(cfg_path)
         assert parsed["connection"]["request_timeout"] == 45
         assert parsed["connection"]["use_server_proxy"] is True
+
+    @pytest.mark.parametrize("value", ["007123", "1e10", "NaN", "1_000", "1.50"])
+    def test_set_keeps_text_a_number_would_change(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        value: str,
+    ) -> None:
+        monkeypatch.delenv("OPEN_SANDBOX_API_KEY", raising=False)
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text("[connection]\n")
+
+        result = runner.invoke(
+            cli,
+            ["--config", str(cfg_path), "config", "set", "connection.api_key", value],
+        )
+
+        assert result.exit_code == 0
+        assert load_config_file(cfg_path)["connection"]["api_key"] == value
+        assert resolve_config(config_path=cfg_path)["api_key"] == value
 
     def test_set_reports_invalid_existing_toml(
         self, runner: CliRunner, tmp_path: Path

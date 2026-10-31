@@ -111,20 +111,20 @@ def _parse_toml_value(raw: str) -> Any:
 
     Booleans, integers, and floats are recognized so values like ``false`` or
     ``30`` keep their native TOML type; anything else is stored as a string.
-    The value is always serialized by tomlkit, so quotes, escapes, and
-    whitespace in string values are encoded correctly.
+    A number that would not write back as the same text (``007123``,
+    ``1e10``, ``NaN``) stays a string, so values such as API keys are kept
+    as typed. The value is always serialized by tomlkit, so quotes, escapes,
+    and whitespace in string values are encoded correctly.
     """
     normalized = raw.lower()
     if normalized in ("true", "false"):
         return normalized == "true"
-    try:
-        return int(raw)
-    except ValueError:
-        pass
-    try:
-        return float(raw)
-    except ValueError:
-        pass
+    for parse in (int, float):
+        try:
+            number = parse(raw)
+        except ValueError:
+            continue
+        return number if str(number) == raw else raw
     return raw
 
 
