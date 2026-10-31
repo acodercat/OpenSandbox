@@ -1151,6 +1151,57 @@ async def test_credential_proxy_requires_dns_nft_mode(mock_docker):
     assert "dns+nft" in exc.value.detail["message"]
 
 
+@pytest.mark.parametrize("mount_path", ["/opt/opensandbox", "/opt/opensandbox/", "//opt/opensandbox"])
+@pytest.mark.asyncio
+@patch("opensandbox_server.services.docker.docker_service.docker")
+async def test_request_volume_at_runtime_path_replaces_runtime_mount(mock_docker, mount_path):
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+    mock_client.api.inspect_volume.return_value = {"Name": "user-runtime"}
+    mock_client.api.create_host_config.side_effect = lambda **kwargs: kwargs
+    mock_client.api.create_container.side_effect = [
+        {"Id": "sidecar-id"},
+        {"Id": "main-id"},
+    ]
+    mock_client.containers.get.side_effect = [MagicMock(id="sidecar-id"), MagicMock(id="main-id")]
+    mock_docker.from_env.return_value = mock_client
+
+    cfg = _app_config()
+    cfg.docker.network_mode = "bridge"
+    cfg.egress = EgressConfig(image="egress:latest")
+    service = DockerSandboxService(config=cfg)
+
+    req = CreateSandboxRequest(
+        image=ImageSpec(uri="python:3.11"),
+        timeout=120,
+        resourceLimits=ResourceLimits(root={}),
+        entrypoint=["python"],
+        networkPolicy=NetworkPolicy(default_action="deny", egress=[]),
+        volumes=[
+            Volume(name="runtime", pvc=PVC(claim_name="user-runtime"), mount_path=mount_path),
+        ],
+    )
+
+    with (
+        patch("opensandbox_server.services.docker.docker_service.generate_egress_token", return_value="egress-token"),
+        patch(
+            "opensandbox_server.services.docker.docker_service.allocate_port_bindings",
+            return_value={
+                "44772": ("0.0.0.0", 44772),
+                "8080": ("0.0.0.0", 8080),
+                "18080": ("0.0.0.0", 18080),
+            },
+        ),
+        patch.object(service, "_ensure_image_available"),
+        patch.object(service, "_prepare_sandbox_runtime"),
+        patch.object(service, "_wait_for_egress_sidecar_ready"),
+    ):
+        await service.create_sandbox(req)
+
+    main_kwargs = mock_client.api.create_container.call_args_list[1].kwargs
+    assert main_kwargs["host_config"]["binds"] == [f"user-runtime:{mount_path}:rw"]
+
+
 @pytest.mark.asyncio
 @patch("opensandbox_server.services.docker.docker_service.docker")
 async def test_egress_sidecar_injection_and_capabilities(mock_docker):

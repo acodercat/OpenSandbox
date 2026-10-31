@@ -125,6 +125,13 @@ class DockerVolumesMixin:
             paths.add(WINDOWS_OEM_MOUNT_PATH)
         return paths
 
+    def _has_volume_at(self, request: CreateSandboxRequest, path: str) -> bool:
+        """Whether a request volume mounts at ``path`` once Docker cleans it."""
+        return any(
+            _clean_mount_path(volume.mount_path) == path
+            for volume in request.volumes or []
+        )
+
     def _validate_volumes(
         self, request
     ) -> tuple[dict[str, dict], list[str]]:
