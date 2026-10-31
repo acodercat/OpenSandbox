@@ -406,7 +406,13 @@ async def _proxy_http_request(
         # observed by this trusted proxy, so clients cannot spoof transport state.
         _set_forwarded_headers(headers, request)
 
-        stream_body = request.method in ("POST", "PUT", "PATCH", "DELETE")
+        # Any method may carry a body; its framing headers say whether one
+        # follows, and Content-Length is forwarded, so the body must be too.
+        stream_body = (
+            request.method in ("POST", "PUT", "PATCH", "DELETE")
+            or "content-length" in request.headers
+            or "transfer-encoding" in request.headers
+        )
         req = client.build_request(
             method=request.method,
             url=target_url,
